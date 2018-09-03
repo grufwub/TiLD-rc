@@ -1,3 +1,4 @@
+import abc
 import bisect
 import collections
 import select
@@ -7,7 +8,12 @@ import struct
 import threading
 import functools
 import itertools
+import extern_libs
+from functools import Throttler
+from itertools import always_iterable, infinite_call
+from extern_libs import consume, 
 
+# TODO: finish adding permanent _STR's
 _ADMIN_STR = "ADMIN"
 _ACTION_STR = "ACTION"
 _CAP_STR = "CAP"
@@ -34,12 +40,34 @@ def _ping_ponger(connection, event):
     # Global handler for ping event
     connection.pong(event.target)
 
+class Connection:
+    """
+    Base class for IRC connections
+    """
+
+    transmit_encoding = "utf-8"
+    "Transmission used for encoding"
+
+    @abc.abstractproperty
+    def socket(self):
+        "The socket for this connection"
+    
+    def __init__(self, reactor):
+        self.reactor = reactor
+    
+    def encode(self, msg):
+        """
+        Encode a message for transmission
+        """
+
+        return msg.encode(self.transmit_encoding)
+
 class ServerConnection(Connection):
     """
     IRC server connection.
     """
 
-    buffer_class = buffer.DecodingLineBuffer
+    buffer_class = extern_libs.DecodingLineBuffer
     socket = None
     connected = False
 
@@ -391,7 +419,273 @@ class ServerConnection(Connection):
 
         self.send_items(_JOIN_STR, channel, key)
     
+    def kick(self, channel, nick, comment = ""):
+        """
+        Send a KICK command
+        """
+
+        self.send_items(_KICK_STR, channel, nick, comment and ':' + comment)
     
+    def links(self, remote_server = "", server_mask = ""):
+        """
+        Send a LINKS command
+        """
+
+        self.send_items(_LINKS_STR, remote_server, server_mask)
+    
+    def list(self, channels = None, server = ""):
+        """
+        Send a LIST command
+        """
+
+        self.send_items(_LIST_STR, ','.join(always_iterable(channels)), server)
+    
+    def lusers(self, server = ""):
+        """
+        Send an LUSERS command
+        """
+
+        self.send_items(_LUSERS_STR, server)
+    
+    def mode(self, target, command):
+        """
+        Send a MODE command
+        """
+
+        self.send_items(_MODE_STR, target, command)
+    
+    def motd(self, server = ""):
+        """
+        Send an MOTD command
+        """
+
+        self.send_items(_MOTD_STR, server)
+    
+    def names(self, channels = None):
+        """
+        Send a NAMES command
+        """
+
+        self.send_items(_NAMES_STR, ','.join(always_iterable(channels)))
+
+    def nick(self, new_nick):
+        """
+        Send a NICK command
+        """
+
+        self.send_items(_NICK_STR, new_nick)
+    
+    def notice(self, target, text):
+        """
+        Send a NOTICE command
+        """
+
+        # Should limit len(text) here!
+        self.send_items(_NOTICE_STR, target, ':' + text)
+    
+    def oper(self, nick, password):
+        """
+        Send an OPER command
+        """
+
+        self.send_items(_OPER_STR, nick, password)
+    
+    def part(self, channels, message = ""):
+        """
+        Send a PART command
+        """
+
+        self.send_items(_PART_STR, ','.join(always_iterable(channels)), message)
+    
+    def pass_(self, password):
+        """
+        Send a PASS command
+        """
+
+        self.send_items(_PASS_STR, password)
+    
+    def ping(self, target, target2 = ""):
+        """
+        Send a PING command
+        """
+
+        self.send_items(_PING_STR, target, target2)
+    
+    def pong(self, target, target2 = ""):
+        """
+        Send a PONG command
+        """
+
+        self.send_items(_PONG_STR, target, target2)
+    
+    def privmsg(self, target, text):
+        """
+        Send a PRIVMSG command
+        """
+
+        self.send_items(_PRVMSG_STR, target, ':' + text)
+    
+    def privmsg_many(self, targets, text):
+        """
+        Send a PRIVMSG command to multiple targets
+        """
+
+        target = ','.join(targets)
+        return self.privmsg(target, text)
+    
+    def quit(self, message = ""):
+        """
+        Send a QUIT command
+        """
+
+        # Many IRC servers don't use your quit message
+        # unless you've been connected for >= 5mins
+        self.send_items(_QUIT_STR, message and ':' + message)
+
+    def _prep_message(self, string):
+        # String should not contain any carriage returns
+        # other than one added here
+        if '\n' in string:
+            raise InvalidCharacters("Carriage returns not allowed in privmsg(text)!")
+
+        bytes = self.encode(string) + b'\r\n'
+        # According to the RFC clients should not transmite >512 bytes
+        if len(bytes) > 512:
+            raise MessageTooLong("Messages limited to 512 bytes including CR/LF!")
+        
+        return bytes
+    
+    def send_items(self, *items):
+        """
+        Send all non-empty items, separated by spaces
+        """
+
+        self.send_raw(' '.join(filter(None, items)))
+    
+    def send_raw(self, string):
+        """
+        Send raw string to the server, padded with appropriate
+        CR LF
+        """
+
+        if self.socket is None:
+            raise ServerNotConnectedError("Not connected.")
+        
+        send = getattr(self.socket, "write", self.socket.send)
+        try:
+            sender(self._prep_message(string))
+        except socket.error:
+            # Ouch!
+            self.disconnect("Connection reset by peer!")
+        
+    def squit(self, server, comment = ""):
+        """
+        Send an SQUIT command
+        """
+
+        self.send_items(_SQUIT_STR, server, comment and ':' + comment)
+    
+    def stats(self, statstype, server = ""):
+        """
+        Send a STATS command
+        """
+
+        self.send_items(_STATS_STR, statstype, server)
+    
+    def time(self, server = ""):
+        """
+        Send a TIME command
+        """
+
+        self.send_items(_TIME_STR, server)
+    
+    def topic(self, channel, new_topic = None):
+        """
+        Send a TOPIC command
+        """
+
+        self.send_items(_TOPIC_STR, channel, new_topic and ':' + new_topic)
+    
+    def trace(self, target = ""):
+        """
+        Send a TRACE command
+        """
+
+        self.send_items(_TRACE_STR, target)
+    
+    def user(self, username, realname):
+        """
+        Send a USER command
+        """
+
+        cmd = "USER {username} 0 * :{realname}".format(**locals())
+        self.send_raw(cmd)
+    
+    def userhost(self, nicks):
+        """
+        Send a USERHOST command
+        """
+
+        self.send_items(_USRHST_STR, ",".join(nicks))
+    
+    def users(self, server = ""):
+        """
+        Send a USERS command
+        """
+
+        self.send_items(_USERS_STR, server)
+    
+    def version(self, server = ""):
+        """
+        Send a VERSION command
+        """
+
+        self.send_items(_VERSION_STR, server)
+    
+    def wallops(self, text):
+        """
+        Send a WALLOPS command
+        """
+
+        self.send_items(_WALLOPS_STR, ":" + text)
+    
+    def who(self, target = "", op = ""):
+        """
+        Send a WHO command
+        """
+
+        self.send_items(_WHO_STR, target, op and "o")
+    
+    def whois(self, targets):
+        """
+        Send a WHOIS command
+        """
+
+        self.send_items(_WHOIS_STR, ",".join(always_iterable(targets)))
+    
+    def whowas(self, nick, max = "", server = ""):
+        """
+        Send a WHOWAS command
+        """
+
+        self.send_items(_WHOWAS_STR, nick, max, server)
+    
+    def set_rate_limit(self, frequency):
+        """
+        Set 'frequency' limit (msgs per second) for this
+        connection. Faster attempts will block
+        """
+
+        self.send_raw = Throttler(self.send_raw, frequency)
+    
+    def set_keepalive(self, interval):
+        """
+        Set a keepalive to occur every 'interval' on this
+        connection
+        """
+
+        pinger = functools.partial(self.ping, "keep-alive")
+        self.reactor.scheduler.execute_every(period = interval, func = pinger)
 
 class PrioritizedHandler( collections.namedtuple('Base', ('priority', 'callback')) ):
     """
@@ -462,6 +756,16 @@ class Reactor:
         """
 
         with self.mutex: self.scheduler.run_pending()
+
+    @property
+    def sockets(self):
+        with self.mutex:
+            return [
+                conn.socket
+                for conn in self.connections
+                if conn is not None
+                and conn.socket is not None
+            ]
     
     def process_once(self, timeout = 0):
         """
@@ -545,5 +849,18 @@ class Reactor:
                 result = handler.callback(connection, event)
                 if result == _STOP_STR:
                     return
-    
-    
+
+class IRCError(Exception):
+    "An IRC exception"
+
+class InvalidCharacters(ValueError):
+    "Invalid characters were encountered in the message"
+
+class MessageTooLong(ValueError):
+    "Message is too long"
+
+class ServerConnectionError(IRCError):
+    pass
+
+class ServerNotConnectedError(ServerConnectionError):
+    pass
