@@ -1,4 +1,6 @@
 _APP_TITLE = "TiLD-rc"
+_APP_AUTHOR = "grufwub"
+_APP_LIB_AUTHOR = "jaraco"
 
 ___name___         = _APP_TITLE
 ___license___      = "MIT"
@@ -20,7 +22,7 @@ _REALNAME = ""
 _PASSWORD = ""
 _CHANNEL = ""
 
-# Required app variables
+# Required app variables / strings
 _CLIENT = None
 _CONSOLE_BUF = None
 _CONSOLE_REFRESH = 0.1
@@ -145,7 +147,7 @@ def connect():
         )
         show_channel_console()
     
-    except:
+    except Exception:
         display_error(_ERRMSG_CONNECT_FAIL)
 
     finally:
@@ -164,6 +166,7 @@ def show_channel_console():
         send_msg,
     ]
 
+    draw_console_view()
     _CONSOLE_BUF = collections.deque(maxlen = _BUF_MAX)
     while True:
         _CONSOLE_BUF.append(retrieve_msgs())
@@ -175,6 +178,11 @@ def show_channel_console():
         time.sleep(_CONSOLE_REFRESH)
 
     # some other things
+
+def draw_console_view():
+    ugfx.clear()
+    # do something
+    pass
 
 def enter_console_msg():
     return user_text_input(_UITEXT_INPUT_CONSOLE)
