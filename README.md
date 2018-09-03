@@ -1,4 +1,10 @@
-TODOs:
+FIRST WORKING RELEASE TODOS:
+
+- finish UI code
+
+- write small IRC client using uIRC
+
+FUTURE TODOs:
 
 - persist connection settings across app sessions
 
