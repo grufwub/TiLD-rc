@@ -1,25 +1,49 @@
 import abc
 import bisect
+import contextlib
+import connection
 import collections
+import ctcp
+import events
+import features
 import select
 import socket
+import schedule
+import message
 import time
+import re
 import struct
 import threading
 import functools
 import itertools
 import extern_libs
-from functools import Throttler
-from itertools import always_iterable, infinite_call
-from extern_libs import consume, 
+from extern_libs import consume, Throttler, always_iterable, infinite_call
 
-# TODO: finish adding permanent _STR's
 _ADMIN_STR = "ADMIN"
 _ACTION_STR = "ACTION"
 _CAP_STR = "CAP"
 _GLOBOPS_STR = "GLOBOPS"
 _INFO_STR = "INFO"
 _STOP_STR = "NO MORE"
+_INVITE_STR = "INVITE"
+_ISON_STR = "ISON"
+_JOIN_STR = "JOIN"
+_KICK_STR = "KICK"
+_LINKS_STR = "LINKS"
+_LIST_STR = "LIST"
+_LUSERS_STR = "LUSERS"
+_MODE_STR = "MODE"
+_MOTD_STR = "MOTD"
+_NAMES_STR = "NAMES"
+_NICK_STR = "NICK"
+_NOTICE_STR = "NOTICE"
+_OPER_STR = "OPER"
+_PART_STR = "PART"
+_PASS_STR = "PASS"
+_PING_STR = "PING"
+_PONG_STR = "PONG"
+_PRVMSG_STR = "PRIVMSG"
+
 _CMD_NICK_STR = "nick"
 _CMD_WELC_STR = "welcome"
 _CMD_FTRLIST_STR = "featurelist"
@@ -36,9 +60,80 @@ _CMD_PING_STR = "ping"
 _CMD_QUIT_STR = "quit"
 _CMD_ACTION_STR = "action"
 
+_cmd_pat = (
+    "^(@(?P<tags>[^ ]*) )?(:(?P<prefix>[^ ]+) +)?"
+    "(?P<command>[^ ]+)( *(?P<argument> .+))?"
+)
+_rfc_1459_command_regexp = re.compile(_cmd_pat)
+
+def is_channel(string):
+    """
+    Check if a string is a channel name
+    """
+    return string and string[0] in "#&+!"
+
 def _ping_ponger(connection, event):
     # Global handler for ping event
     connection.pong(event.target)
+
+class Event:
+    """
+    An IRC event
+    """
+
+    def __init__(self, type, source, target, arguments = None, tags = None):
+        self.type = type
+        self.source = source
+        self.target = target
+        
+        if arguments is None:
+            arguments = list()
+        self.arguments = arguments
+
+        if tags is None:
+            tags = list()
+        self.tags = tags
+    
+    def __str__(self):
+        tmpl = (
+            "type: {type}, "
+            "source: {source}, "
+            "target: {target}, "
+            "arguments: {arguments}, "
+            "tags: {tags}"
+        )
+        return tmpl.format(**vars(self))
+
+class NickMask(str):
+    @classmethod
+    def from_params(cls, nick, user, host):
+        return cls("{nick}!{user}@{host}".format(**vars()))
+    
+    @property
+    def nick(self):
+        nick, sep, userhost = self.partition("!")
+        return nick
+    
+    @property
+    def userhost(self):
+        nick, sep, userhost = self.partition("!")
+        return userhost or None
+    
+    @property
+    def host(self):
+        nick, sep, userhost = self.partition("!")
+        user, sep, host = userhost.partition("@")
+        return host or None
+    
+    @property
+    def user(self):
+        nick, sep, userhost = self.partition("!")
+        user, sep, host = userhost.partition("@")
+        return user or None
+    
+    @classmethod
+    def from_group(cls, group):
+        return cls(group) if group else None
 
 class Connection:
     """
@@ -75,7 +170,7 @@ class ServerConnection(Connection):
         super(ServerConnection, self).__init__(reactor)
         self.features = features.FeatureSet()
     
-    @functools.save_method_args
+    @extern_libs.save_method_args
     def connect(self, server, port, nickname, password = None, username = None,
                     ircname = None, connect_factory = connection.Factory()):
         """
@@ -104,7 +199,7 @@ class ServerConnection(Connection):
             raise ServerConnectionError("Couldn't connect to socket: %s" % ex)
 
         self.connected = True
-        self.react._on_connect(self.socket)
+        self.reactor._on_connect(self.socket)
 
         # Now to log on...
         if self.password:
@@ -219,7 +314,7 @@ class ServerConnection(Connection):
         handler = (
             self._handle_message
             if command in [_CMD_PRVMSG_STR, _CMD_NOTICE_STR]
-            else: self._handle_other
+            else self._handle_other
         )
 
         handler(arguments, command, source, tags)
@@ -278,7 +373,7 @@ class ServerConnection(Connection):
     def _command_from_group(group):
         command = group.lower()
         # Translate numerics into more readable strings
-        return events.numerics.get(command, command)
+        return events.numeric.get(command, command)
     
     def _handle_event(self, event):
         """
@@ -341,7 +436,7 @@ class ServerConnection(Connection):
 
         self.send_items(_CAP_STR, subcommand, *_multi_parameter(args))
     
-    def ctcp(self, ctcptype, target, paramater = ""):
+    def ctcp(self, ctcptype, target, parameter = ""):
         """
         Send a CTCP command
         """
@@ -354,7 +449,7 @@ class ServerConnection(Connection):
 
         self.privmsg(target, tmpl.format(**vars()))
     
-    def ctcp_reply(self, target, paramter):
+    def ctcp_reply(self, target, parameter):
         """
         Send a CTCP REPLY command
         """
@@ -403,7 +498,7 @@ class ServerConnection(Connection):
         Send an INVITE command
         """
 
-        self.send_items(_INVITE_STR, server)
+        self.send_items(_INVITE_STR, nick, channel)
     
     def ison(self, nicks):
         """
@@ -571,7 +666,7 @@ class ServerConnection(Connection):
         if self.socket is None:
             raise ServerNotConnectedError("Not connected.")
         
-        send = getattr(self.socket, "write", self.socket.send)
+        sender = getattr(self.socket, "write", self.socket.send)
         try:
             sender(self._prep_message(string))
         except socket.error:
@@ -704,8 +799,8 @@ class Reactor:
     Processes events from one or more IRC server connections.
     """
 
-    _scheduler_class = schedule.DefaultScheduler
-    _connection_class = ServerConnection
+    scheduler_class = schedule.DefaultScheduler
+    connection_class = ServerConnection
 
     def __do_nothing(*args, **kwargs):
         # Surprise, surprise, here we do nothing!
