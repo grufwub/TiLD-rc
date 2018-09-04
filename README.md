@@ -13,3 +13,5 @@ FUTURE TODOs:
 - disconnect button? back to channel list?
 
 - show user list
+
+- Allow setting font size

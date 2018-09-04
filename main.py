@@ -25,8 +25,8 @@ _CHANNEL = ""
 # Required app variables / strings
 _CLIENT = None
 _CONSOLE_BUF = None
+_MAX_BUF = 50
 _CONSOLE_REFRESH = 0.1
-_BUF_MAX = 50
 _UITEXT_MAIN = "Options:"
 _UITEXT_CHANNELS = "Channels:"
 _UITEXT_NONE = "Exit"
@@ -145,57 +145,91 @@ def connect():
             _PASSWORD,
             _CHANNEL
         )
+
+        _CONSOLE_BUF = collections.deque(maxlen = _MAX_BUF)
+
         show_channel_console()
+        # add UI handlers
+        _CLIENT.on_pubmsg(on_pubmsg)
+        _CLIENT.on_privmsg(on_privmsg)
+        _CLIENT.on_join(on_join)
+        _CLIENT.on_kick(on_kick)
+        _CLIENT.on_nick(on_nick)
+        _CLIENT.on_quit(on_quit)
+
+        _CLIENT.process_forever()
     
-    except Exception:
+    except RuntimeError:
         display_error(_ERRMSG_CONNECT_FAIL)
 
     finally:
-        # do something else
+        _CLIENT.disconnect()
         del _CLIENT
         del _CONSOLE_BUF
         main()
 
 def show_channels():
-    # do something
-    pass
+    chan_list = _CLIENT.channel_list()
+    menu_items = list()
+    for chan in chan_list:
+        item_dict = {
+            "title": chan
+            "function": _CLIENT.set_channel(chan)
+        }
+        menu_items.append(item_dict)
+    
+    selection = dialog.prompt_option(menu_items, none_text = _UITEXT_NONE, text = _UITEXT_CHANNELS, title = _APP_TITLE)
+    if selection:
+        func = selection['function']
+        func()
+    main_menu()
 
 def show_channel_console():
-    console_items = [
-        enter_console_msg,
-        send_msg,
-    ]
+    # console_items = [
+    #     enter_console_msg,
+    #     send_msg,
+    # ]
 
-    draw_console_view()
-    _CONSOLE_BUF = collections.deque(maxlen = _BUF_MAX)
-    while True:
-        _CONSOLE_BUF.append(retrieve_msgs())
-        update_console_view()
+    # draw_console_view()
+    # while True:
 
-        if buttons.ispressed(Buttons.BTN_B) or buttons.ispressed(Buttons.BTN_Menu):
-            break
+    #     if buttons.ispressed(Buttons.BTN_B) or buttons.ispressed(Buttons.BTN_Menu):
+    #         break
 
-        time.sleep(_CONSOLE_REFRESH)
-
-    # some other things
+    #     time.sleep(_CONSOLE_REFRESH)
+    pass
 
 def draw_console_view():
     ugfx.clear()
     # do something
     pass
 
-def enter_console_msg():
-    return user_text_input(_UITEXT_INPUT_CONSOLE)
+# def enter_console_msg():
+#     return user_text_input(_UITEXT_INPUT_CONSOLE)
 
-def send_msg(msg):
-    _CLIENT.send_msg(msg)
-
-def retrieve_msgs():
-    # do something
-    return
+# def send_msg(msg):
+#     _CLIENT.send_msg(msg)
 
 def update_console_view():
     # do something
+    pass
+
+def on_pubmsg():
+    pass
+
+def on_privmsg():
+    pass
+
+def on_join():
+    pass
+
+def on_kick():
+    pass
+
+def on_quit():
+    pass
+
+def on_nick():
     pass
 ### END: UI functions
 
